@@ -75,7 +75,7 @@ app.post('/api/drivers/register', async (req, res) => {
     name,
     email,
     phoneNumber,
-    password, // This will now be stored in plain text
+    password,
     rcNumber,
     fcDate,
     insuranceNumber,
@@ -84,18 +84,12 @@ app.post('/api/drivers/register', async (req, res) => {
     drivingLicenseExpiryDate
   } = req.body;
 
-  // Basic input validation
   if (!name || !email || !phoneNumber || !password) {
     return res.status(400).json({ message: 'Required fields (name, email, phoneNumber, password) are missing' });
   }
 
   try {
-    // --- CHANGE IS HERE ---
-    // Removed the bcrypt.hash line. The 'password' variable will now directly be the plain text password.
-    // const hashedPassword = await bcrypt.hash(password, 10);
-    // --- END CHANGE ---
-
-    const [result] = await db.query( // Using await with db.query
+    const [result] = await db.query(
       `INSERT INTO drivers
         (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -103,8 +97,8 @@ app.post('/api/drivers/register', async (req, res) => {
         name,
         email,
         phoneNumber,
-        password, // <-- Storing the plain text password directly
-        rcNumber || null, // Allow null if not provided
+        password, // stored as plain text (⚠️ not recommended for production)
+        rcNumber || null,
         fcDate || null,
         insuranceNumber || null,
         insuranceExpiryDate || null,
@@ -112,15 +106,16 @@ app.post('/api/drivers/register', async (req, res) => {
         drivingLicenseExpiryDate || null
       ]
     );
+
     res.status(201).json({ message: 'Driver registered successfully', driverId: result.insertId });
   } catch (err) {
-    // Check for duplicate entry error (e.g., email unique constraint)
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ message: 'Email, phone, RC number, or insurance number already registered.' });
     }
     handleDbError(res, err, 'Driver registration');
   }
 });
+
 
 // Check if driver exists (email, phone, RC, insurance number)
 app.post('/api/drivers/check-exists', async (req, res) => {
@@ -183,7 +178,8 @@ app.post('/api/drivers/check-exists', async (req, res) => {
 //   }
 // });
 
-// Login
+
+
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
@@ -194,35 +190,33 @@ app.post('/login', async (req, res) => {
   try {
     const [rows] = await db.query('SELECT * FROM drivers WHERE email = ?', [email]);
 
-    if (rows.length === 0) {
+    if (!rows || rows.length === 0) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     const driver = rows[0];
 
-    // --- CHANGE IS HERE ---
-    // Instead of bcrypt.compare, directly compare the plain text passwords
     const isMatch = (password === driver.password);
-    // --- END CHANGE ---
-
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     const token = jwt.sign(
-      { id: driver.id, email: driver.email, role: 'driver' }, // Include a role if applicable
+      { id: driver.id, email: driver.email, role: 'driver' },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    // Filter out sensitive data like password before sending to client
     const { password: _, ...userWithoutPassword } = driver;
 
     res.status(200).json({ token, user: userWithoutPassword });
   } catch (err) {
-    handleDbError(res, err, 'Login');
+    console.error('Login error:', err);
+    res.status(500).json({ message: 'Login failed', error: err.message || err });
   }
 });
+
+
 
 // Get driver by ID (Consolidated from /get/:uid and /:id)
 app.get('/api/drivers/:id', async (req, res) => {
@@ -479,28 +473,76 @@ app.get('/api/bills/get/:driverEmail', async (req, res) => {
 });
 
 // Accept trip - Simplified to assign the trip to one driver
+// app.put('/api/trips/:id/accept', async (req, res) => {
+//   const tripId = req.params.id;
+//   const { driverEmail } = req.body;
+
+//   if (!driverEmail) {
+//     return res.status(400).json({ message: 'driverEmail is required for accepting a trip' });
+//   }
+
+//   try {
+//     // Set status to 'accept' and assign the driverEmail directly
+//     const [result] = await db.query(
+//       'UPDATE trips SET driverEmail = ?, status = ?, assignedAt = NOW() WHERE id = ?',
+//       [driverEmail, 'accept', tripId]
+//     );
+
+//     if (result.affectedRows === 0) {
+//       return res.status(404).json({ message: 'Trip not found or already assigned' });
+//     }
+
+//     res.status(200).json({ message: 'Trip accepted and assigned successfully' });
+//   } catch (err) {
+//     handleDbError(res, err, 'Accepting trip');
+//   }
+// });
 app.put('/api/trips/:id/accept', async (req, res) => {
   const tripId = req.params.id;
   const { driverEmail } = req.body;
 
   if (!driverEmail) {
-    return res.status(400).json({ message: 'driverEmail is required for accepting a trip' });
+    return res.status(400).json({ message: 'Driver email is required' });
   }
 
   try {
-    // Set status to 'accept' and assign the driverEmail directly
-    const [result] = await db.query(
-      'UPDATE trips SET driverEmail = ?, status = ?, assignedAt = NOW() WHERE id = ?',
-      [driverEmail, 'accept', tripId]
+    const [results] = await db.query(
+      'SELECT acceptedDrivers FROM trips WHERE id = ?',
+      [tripId]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Trip not found or already assigned' });
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'Trip not found' });
     }
 
-    res.status(200).json({ message: 'Trip accepted and assigned successfully' });
+    let currentAccepted = [];
+
+    if (results[0].acceptedDrivers) {
+      try {
+        currentAccepted = JSON.parse(results[0].acceptedDrivers);
+      } catch (parseErr) {
+        console.error('Error parsing acceptedDrivers JSON:', parseErr);
+        return res.status(500).json({ message: 'Invalid acceptedDrivers format in DB' });
+      }
+    }
+
+    // Avoid duplicates
+    if (!currentAccepted.includes(driverEmail)) {
+      currentAccepted.push(driverEmail);
+    }
+
+    const updatedAcceptedDrivers = JSON.stringify(currentAccepted);
+
+    await db.query(
+      'UPDATE trips SET acceptedDrivers = ?, status = ? WHERE id = ?',
+      [updatedAcceptedDrivers, 'accept', tripId]
+    );
+
+    res.status(200).json({ message: 'Trip accepted successfully' });
+
   } catch (err) {
-    handleDbError(res, err, 'Accepting trip');
+    console.error('Trip acceptance error:', err);
+    res.status(500).json({ message: 'Failed to accept trip', error: err.message || err });
   }
 });
 
