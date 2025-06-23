@@ -1,27 +1,26 @@
-
-
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-require('dotenv').config();
+require('dotenv').config(); // Ensure your .env file is configured with DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, and JWT_SECRET
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const db = require('./config/db');
+const db = require('./config/db'); // Import the promise-based db connection from config/db.js
 
+// Middleware
 app.use(cors());
 app.use(bodyParser.json());
 
-// Helper function for error handling
+// Helper function for error handling - now using async/await consistent approach
 const handleDbError = (res, err, context = 'Database operation') => {
-  console.error(`${context} error:`, err);
-  res.status(500).json({ message: `${context} failed` });
+  console.error(`${context} error:`, err.message || err); // Log the error message
+  res.status(500).json({ message: `${context} failed`, error: err.message || 'Internal Server Error' });
 };
 
 // Driver Registration
-app.post('/api/drivers/register', (req, res) => {
+app.post('/api/drivers/register', async (req, res) => {
   const {
     name,
     email,
@@ -35,218 +34,216 @@ app.post('/api/drivers/register', (req, res) => {
     drivingLicenseExpiryDate
   } = req.body;
 
+  // Basic input validation
   if (!name || !email || !phoneNumber || !password) {
-    return res.status(400).json({ message: 'Required fields are missing' });
+    return res.status(400).json({ message: 'Required fields (name, email, phoneNumber, password) are missing' });
   }
 
-  bcrypt.hash(password, 10, (err, hashedPassword) => {
-    if (err) {
-      return handleDbError(res, err, 'Password hashing');
-    }
+  try {
+    //const hashedPassword = await bcrypt.hash(password, 10);
 
-    db.query(
-      `INSERT INTO drivers 
-      (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    const [result] = await db.query( // Using await with db.query
+      `INSERT INTO drivers
+       (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name,
         email,
         phoneNumber,
         hashedPassword,
-        rcNumber,
-        fcDate,
-        insuranceNumber,
-        insuranceExpiryDate,
-        drivingLicense,
-        drivingLicenseExpiryDate
-      ],
-      (err, result) => {
-        if (err) {
-          return handleDbError(res, err, 'Driver registration');
-        }
-        res.status(201).json({ message: 'Driver registered successfully', driverId: result.insertId });
-      }
+        rcNumber || null, // Allow null if not provided
+        fcDate || null,
+        insuranceNumber || null,
+        insuranceExpiryDate || null,
+        drivingLicense || null,
+        drivingLicenseExpiryDate || null
+      ]
     );
-  });
+    res.status(201).json({ message: 'Driver registered successfully', driverId: result.insertId });
+  } catch (err) {
+    // Check for duplicate entry error (e.g., email unique constraint)
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'Email, phone, RC number, or insurance number already registered.' });
+    }
+    handleDbError(res, err, 'Driver registration');
+  }
 });
 
-// Check if driver exists
-app.post('/api/drivers/check-exists', (req, res) => {
+// Check if driver exists (email, phone, RC, insurance number)
+app.post('/api/drivers/check-exists', async (req, res) => {
   const { email, phoneNumber, rcNumber, insuranceNumber } = req.body;
 
-  db.query(
-    `SELECT email, phone, rc_number, insurance_number FROM drivers 
-    WHERE email = ? OR phone = ? OR rc_number = ? OR insurance_number = ?`,
-    [email, phoneNumber, rcNumber, insuranceNumber],
-    (err, rows) => {
-      if (err) {
-        return handleDbError(res, err, 'Checking driver existence');
-      }
+  try {
+    const [rows] = await db.query( // Using await with db.query
+      `SELECT email, phone, rc_number, insurance_number FROM drivers
+       WHERE email = ? OR phone = ? OR rc_number = ? OR insurance_number = ?`,
+      [email, phoneNumber, rcNumber, insuranceNumber]
+    );
 
-      const exists = {
-        email: rows.some(r => r.email === email),
-        phoneNumber: rows.some(r => r.phone === phoneNumber),
-        rcNumber: rows.some(r => r.rc_number === rcNumber),
-        insuranceNumber: rows.some(r => r.insurance_number === insuranceNumber),
-      };
+    const exists = {
+      email: rows.some(r => r.email === email),
+      phoneNumber: rows.some(r => r.phone === phoneNumber),
+      rcNumber: rows.some(r => r.rc_number === rcNumber),
+      insuranceNumber: rows.some(r => r.insurance_number === insuranceNumber),
+    };
 
-      res.json(exists);
-    }
-  );
+    res.json(exists);
+  } catch (err) {
+    handleDbError(res, err, 'Checking driver existence');
+  }
 });
 
 // Login
-app.post('/login', (req, res) => {
+app.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
-  db.query('SELECT * FROM drivers WHERE email = ?', [email], async (err, rows) => {
-    if (err) {
-      return handleDbError(res, err, 'Login');
-    }
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
+  }
+
+  try {
+    const [rows] = await db.query('SELECT * FROM drivers WHERE email = ?', [email]); // Using await
 
     if (rows.length === 0) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     const driver = rows[0];
-    const isMatch = await bcrypt.compare(password, driver.password);
+    //const isMatch = await bcrypt.compare(password, driver.password);
 
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     const token = jwt.sign(
-      { id: driver.id, email: driver.email },
+      { id: driver.id, email: driver.email, role: 'driver' }, // Include a role if applicable
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.status(200).json({ token, user: driver });
-  });
+    // Filter out sensitive data like password before sending to client
+    const { password: _, ...userWithoutPassword } = driver;
+
+    res.status(200).json({ token, user: userWithoutPassword });
+  } catch (err) {
+    handleDbError(res, err, 'Login');
+  }
 });
 
-// Get driver by UID
-app.get('/api/drivers/get/:uid', (req, res) => {
-  const { uid } = req.params;
+// Get driver by ID (Consolidated from /get/:uid and /:id)
+app.get('/api/drivers/:id', async (req, res) => {
+  const { id } = req.params;
 
-  if (!uid) {
-    return res.status(400).json({ message: 'UID is required' });
+  if (!id) {
+    return res.status(400).json({ message: 'Driver ID is required' });
   }
 
-  db.query('SELECT * FROM drivers WHERE id = ?', [uid], (err, results) => {
-    if (err) {
-      console.error('❌ Database error:', err);
-      return res.status(500).json({ message: 'Server error' });
-    }
+  try {
+    const [results] = await db.query('SELECT * FROM drivers WHERE id = ?', [id]); // Using await
 
     if (results.length === 0) {
       return res.status(404).json({ message: 'Driver not found' });
     }
 
-    res.status(200).json(results[0]);
-  });
+    // Filter out sensitive data
+    const { password, ...driverWithoutPassword } = results[0];
+    res.status(200).json(driverWithoutPassword);
+  } catch (err) {
+    handleDbError(res, err, 'Fetching driver by ID');
+  }
 });
 
 // Get driver status by email
-app.get('/api/drivers/status/:email', (req, res) => {
-  const { email } = req.params;
-
-  db.query('SELECT status FROM drivers WHERE email = ?', [email], (err, rows) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching driver status');
-    }
-
-    if (rows.length === 0) {
-      return res.status(404).json({ message: 'Driver not found' });
-    }
-
-    res.json({ status: rows[0].status });
-  });
-});
-
-// Get trip status by email
-app.get('/api/trips/status/:email', (req, res) => {
+app.get('/api/drivers/status/:email', async (req, res) => {
   const { email } = req.params;
 
   if (!email) {
     return res.status(400).json({ message: 'Email is required' });
   }
 
-  db.query(
-    `SELECT * FROM trips WHERE driverEmail = ? AND (status = 'accept' OR status = 'WIP')`,
-    [email],
-    (err, trips) => {
-      if (err) {
-        return handleDbError(res, err, 'Fetching trips');
-      }
+  try {
+    const [rows] = await db.query('SELECT status FROM drivers WHERE email = ?', [email]); // Using await
 
-      const acceptedTrips = trips.filter(trip => trip.status === 'accept');
-      const wipTrips = trips.filter(trip => trip.status === 'WIP');
-
-      res.json({ acceptedTrips, wipTrips });
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Driver not found' });
     }
-  );
+
+    res.json({ status: rows[0].status });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching driver status');
+  }
 });
 
-// Get driver by ID
-app.get('/api/drivers/:id', (req, res) => {
-  const { id } = req.params;
-  
-  db.query('SELECT * FROM drivers WHERE id = ?', [id], (err, results) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching driver');
-    }
+// Get trip status by email (for active trips)
+app.get('/api/trips/status/:email', async (req, res) => {
+  const { email } = req.params;
 
-    if (results.length === 0) {
-      return res.status(404).json({ error: 'Driver not found' });
-    }
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required' });
+  }
 
-    res.json(results[0]);
-  });
+  try {
+    const [trips] = await db.query( // Using await
+      `SELECT * FROM trips WHERE driverEmail = ? AND (status = 'accept' OR status = 'WIP')`,
+      [email]
+    );
+
+    const acceptedTrips = trips.filter(trip => trip.status === 'accept');
+    const wipTrips = trips.filter(trip => trip.status === 'WIP');
+
+    res.json({ acceptedTrips, wipTrips });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching active trips for driver');
+  }
 });
 
-// Update driver
-app.put('/api/drivers/:id', (req, res) => {
+// Update driver profile
+app.put('/api/drivers/:id', async (req, res) => {
   const { id } = req.params;
-  const updatedData = req.body;
+  const updatedData = req.body; // Ensure sensitive fields like 'password' are not updated directly here
 
-  db.query('UPDATE drivers SET ? WHERE id = ?', [updatedData, id], (err) => {
-    if (err) {
-      return handleDbError(res, err, 'Updating driver');
+  try {
+    const [result] = await db.query('UPDATE drivers SET ? WHERE id = ?', [updatedData, id]); // Using await
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Driver not found or no changes made' });
     }
+
     res.json({ message: 'Driver updated successfully' });
-  });
+  } catch (err) {
+    handleDbError(res, err, 'Updating driver profile');
+  }
 });
 
-// Get all trips
-app.get('/api/trips', (req, res) => {
-  db.query('SELECT * FROM trips', (err, rows) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching trips');
-    }
+// Get all trips (for admin dashboard, typically)
+app.get('/api/trips', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM trips ORDER BY created_at DESC'); // Using await, order by creation
     res.status(200).json(rows);
-  });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching all trips');
+  }
 });
 
 // Get trip by ID
-app.get('/api/trips/:id', (req, res) => {
+app.get('/api/trips/:id', async (req, res) => {
   const tripId = req.params.id;
-  
-  db.query('SELECT * FROM trips WHERE id = ?', [tripId], (err, results) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching trip');
-    }
+
+  try {
+    const [results] = await db.query('SELECT * FROM trips WHERE id = ?', [tripId]); // Using await
 
     if (results.length === 0) {
       return res.status(404).json({ message: 'Trip not found' });
     }
 
     res.status(200).json(results[0]);
-  });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching specific trip');
+  }
 });
 
 // Complete trip endpoint
-app.put('/api/trips/:id/complete', (req, res) => {
+app.put('/api/trips/:id/complete', async (req, res) => {
   const tripId = req.params.id;
   const {
     startMeter,
@@ -262,109 +259,111 @@ app.put('/api/trips/:id/complete', (req, res) => {
 
   // Validate required fields
   if (!startMeter || !endMeter || !finalBill) {
-    return res.status(400).json({ message: 'Required fields are missing' });
+    return res.status(400).json({ message: 'Required fields (startMeter, endMeter, finalBill) are missing' });
   }
 
-  db.query(
-    `UPDATE trips SET 
-      startMeter = ?,
-      endMeter = ?,
-      luggage = ?,
-      pet = ?,
-      toll = ?,
-      hills = ?,
-      totalKm = ?,
-      finalKm = ?,
-      finalBill = ?,
-      status = 'completed',
-      created_at = NOW()
-    WHERE id = ?`,
-    [
-      startMeter,
-      endMeter,
-      luggage || 0,
-      pet || 0,
-      toll || 0,
-      hills || 0,
-      totalKm || 0,
-      finalKm || 0,
-      finalBill,
-      tripId
-    ],
-    (err) => {
-      if (err) {
-        return handleDbError(res, err, 'Completing trip');
-      }
+  try {
+    const [result] = await db.query( // Using await
+      `UPDATE trips SET
+        startMeter = ?,
+        endMeter = ?,
+        luggage = ?,
+        pet = ?,
+        toll = ?,
+        hills = ?,
+        totalKm = ?,
+        finalKm = ?,
+        finalBill = ?,
+        status = 'completed',
+        completed_at = NOW() -- Assuming a 'completed_at' timestamp column is added
+      WHERE id = ?`,
+      [
+        startMeter,
+        endMeter,
+        luggage || 0,
+        pet || 0,
+        toll || 0,
+        hills || 0,
+        totalKm || 0,
+        finalKm || 0,
+        finalBill,
+        tripId
+      ]
+    );
 
-      res.json({
-        message: 'Trip marked as completed successfully',
-        tripId,
-        finalBill
-      });
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Trip not found or not updated' });
     }
-  );
+
+    res.json({
+      message: 'Trip marked as completed successfully',
+      tripId,
+      finalBill
+    });
+  } catch (err) {
+    handleDbError(res, err, 'Completing trip');
+  }
 });
 
 // Create bill endpoint
-app.post('/api/bills', (req, res) => {
+app.post('/api/bills', async (req, res) => {
   const data = req.body;
 
   // Validate required fields
   if (!data.driverEmail || !data.customerName || !data.finalBill) {
-    return res.status(400).json({ message: 'Required fields are missing' });
+    return res.status(400).json({ message: 'Required fields (driverEmail, customerName, finalBill) are missing' });
   }
 
-  db.query(
-    `INSERT INTO bills (
-      driverEmail, customerName, phone,
-      pickupLocation, dropLocation,
-      pickupDate, pickupTime, tripType,
-      startMeter, endMeter, totalKm, finalKm, kmPrice, totalKmPrice,
-      luggageCharge, petCharge, tollCharge, hillsCharge, bettaCharge,
-      stateCharge, totalEnteredCharges, finalBill, createdAt
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      data.driverEmail,
-      data.customerName,
-      data.phone || null,
-      data.pickupLocation || null,
-      data.dropLocation || null,
-      data.pickupDate || null,
-      data.pickupTime || null,
-      data.tripType || null,
-      data.startMeter || 0,
-      data.endMeter || 0,
-      data.totalKm || 0,
-      data.finalKm || 0,
-      data.kmPrice || 0,
-      data.totalKmPrice || 0,
-      data.luggageCharge || 0,
-      data.petCharge || 0,
-      data.tollCharge || 0,
-      data.hillsCharge || 0,
-      data.bettaCharge || 0,
-      data.stateCharge || 0,
-      data.totalEnteredCharges || 0,
-      data.finalBill,
-      data.createdAt ? new Date(data.createdAt) : new Date()
-    ],
-    (err, result) => {
-      if (err) {
-        return handleDbError(res, err, 'Creating bill');
-      }
+  try {
+    const [result] = await db.query( // Using await
+      `INSERT INTO bills (
+        driverEmail, customerName, phone,
+        pickupLocation, dropLocation,
+        pickupDate, pickupTime, tripType,
+        startMeter, endMeter, totalKm, finalKm, kmPrice, totalKmPrice,
+        luggageCharge, petCharge, tollCharge, hillsCharge, bettaCharge,
+        stateCharge, totalEnteredCharges, finalBill, createdAt
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        data.driverEmail,
+        data.customerName,
+        data.phone || null,
+        data.pickupLocation || null,
+        data.dropLocation || null,
+        data.pickupDate || null,
+        data.pickupTime || null,
+        data.tripType || null,
+        data.startMeter || 0,
+        data.endMeter || 0,
+        data.totalKm || 0,
+        data.finalKm || 0,
+        data.kmPrice || 0,
+        data.totalKmPrice || 0,
+        data.luggageCharge || 0,
+        data.petCharge || 0,
+        data.tollCharge || 0,
+        data.hillsCharge || 0,
+        data.bettaCharge || 0,
+        data.stateCharge || 0,
+        data.totalEnteredCharges || 0,
+        data.finalBill,
+        data.createdAt ? new Date(data.createdAt) : new Date() // Ensure createdAt is a Date object
+      ]
+    );
 
-      res.status(201).json({
-        message: 'Bill saved successfully',
-        billId: result.insertId,
-        tripId: data.tripId
-      });
-    }
-  );
+    res.status(201).json({
+      message: 'Bill saved successfully',
+      billId: result.insertId,
+      tripId: data.tripId // Assuming tripId might be passed for linking
+    });
+  } catch (err) {
+    handleDbError(res, err, 'Creating bill');
+  }
 });
 
-// Get all bills for a driver
-app.get('/api/bills/get/:driverEmail', (req, res) => {
+// Get all bills for a specific driver
+app.get('/api/bills/get/:driverEmail', async (req, res) => {
   const { driverEmail } = req.params;
 
   if (!driverEmail) {
@@ -377,196 +376,161 @@ app.get('/api/bills/get/:driverEmail', (req, res) => {
     ORDER BY createdAt DESC
   `;
 
-  db.query(sql, [driverEmail], (err, results) => {
-    if (err) {
-      return res.status(500).json({ message: 'Server error', error: err.message });
-    }
-    
+  try {
+    const [results] = await db.query(sql, [driverEmail]); // Using await
     res.status(200).json(results);
-  });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching driver bills');
+  }
 });
 
-// Accept trip
-// app.put('/api/trips/:id/accept', (req, res) => {
-//   const tripId = req.params.id;
-//   const { driverEmail } = req.body;
-
-//   db.query('SELECT driverEmail FROM trips WHERE id = ?', [tripId], (err, results) => {
-//     if (err) {
-//       return handleDbError(res, err, 'Accepting trip');
-//     }
-
-//     let currentDrivers = results[0]?.driverEmail || '';
-//     let updatedDrivers = currentDrivers
-//       ? currentDrivers.split(',').includes(driverEmail)
-//         ? currentDrivers
-//         : currentDrivers + ',' + driverEmail
-//       : driverEmail;
-
-//     db.query(
-//       'UPDATE trips SET driverEmail = ?, status = ? WHERE id = ?',
-//       [updatedDrivers, 'accept', tripId],
-//       (err) => {
-//         if (err) {
-//           return handleDbError(res, err, 'Accepting trip');
-//         }
-
-//         res.status(200).json({ message: 'Trip accepted successfully' });
-//       }
-//     );
-//   });
-// });
-
-app.put('/api/trips/:id/accept', (req, res) => {
+// Accept trip - Simplified to assign the trip to one driver
+app.put('/api/trips/:id/accept', async (req, res) => {
   const tripId = req.params.id;
   const { driverEmail } = req.body;
 
-  db.query('SELECT acceptedDrivers FROM trips WHERE id = ?', [tripId], (err, results) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching acceptedDrivers');
-    }
+  if (!driverEmail) {
+    return res.status(400).json({ message: 'driverEmail is required for accepting a trip' });
+  }
 
-    let currentAccepted = [];
-
-    if (results.length > 0 && results[0].acceptedDrivers) {
-      try {
-        currentAccepted = JSON.parse(results[0].acceptedDrivers);
-      } catch (parseErr) {
-        console.error('Error parsing acceptedDrivers JSON:', parseErr);
-      }
-    }
-
-    // Avoid duplicates
-    if (!currentAccepted.includes(driverEmail)) {
-      currentAccepted.push(driverEmail);
-    }
-
-    const updatedAcceptedDrivers = JSON.stringify(currentAccepted);
-
-    db.query(
-      'UPDATE trips SET acceptedDrivers = ?, status = ? WHERE id = ?',
-      [updatedAcceptedDrivers, 'accept', tripId],
-      (err) => {
-        if (err) {
-          return handleDbError(res, err, 'Updating acceptedDrivers');
-        }
-
-        res.status(200).json({ message: 'Trip accepted successfully' });
-      }
+  try {
+    // Set status to 'accept' and assign the driverEmail directly
+    const [result] = await db.query(
+      'UPDATE trips SET driverEmail = ?, status = ?, assignedAt = NOW() WHERE id = ?',
+      [driverEmail, 'accept', tripId]
     );
-  });
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Trip not found or already assigned' });
+    }
+
+    res.status(200).json({ message: 'Trip accepted and assigned successfully' });
+  } catch (err) {
+    handleDbError(res, err, 'Accepting trip');
+  }
 });
 
-
-// Get accepted trips
-app.get('/api/trips/accepted/:driverEmail', (req, res) => {
+// Get accepted trips for a driver (based on driverEmail column)
+app.get('/api/trips/accepted/:driverEmail', async (req, res) => {
   const { driverEmail } = req.params;
 
   if (!driverEmail) {
     return res.status(400).json({ message: 'driverEmail is required' });
   }
 
-  db.query(
-    'SELECT * FROM trips WHERE status = ? AND driverEmail LIKE ?',
-    ['accept', `%${driverEmail}%`],
-    (err, results) => {
-      if (err) {
-        console.error('Fetching accepted trips error:', err);
-        return res.status(500).json({ message: 'Fetching accepted trips failed' });
-      }
-
-      res.status(200).json(results);
-    }
-  );
+  try {
+    // Assuming driverEmail column holds the assigned driver's email for 'accept' status
+    const [results] = await db.query(
+      'SELECT * FROM trips WHERE status = ? AND driverEmail = ? ORDER BY assignedAt DESC',
+      ['accept', driverEmail]
+    );
+    res.status(200).json(results);
+  } catch (err) {
+    handleDbError(res, err, 'Fetching accepted trips');
+  }
 });
 
-// Start trip
-app.put('/api/trips/:id/start', (req, res) => {
+// Start trip (moves status from 'accept' to 'WIP')
+app.put('/api/trips/:id/start', async (req, res) => {
   const tripId = req.params.id;
 
-  db.query(
-    'UPDATE trips SET status = ? WHERE id = ?',
-    ['WIP', tripId],
-    (err, result) => {
-      if (err) {
-        return handleDbError(res, err, 'Starting trip');
-      }
+  try {
+    const [result] = await db.query(
+      'UPDATE trips SET status = ? WHERE id = ? AND status = "accept"', // Only allow starting if accepted
+      ['WIP', tripId]
+    );
 
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: 'Trip not found' });
-      }
-
-      res.status(200).json({ message: 'Trip started successfully' });
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Trip not found or not in "accept" status' });
     }
-  );
+
+    res.status(200).json({ message: 'Trip started successfully' });
+  } catch (err) {
+    handleDbError(res, err, 'Starting trip');
+  }
 });
 
-// Get WIP trips
-app.get('/api/trips/wip/:driverEmail', (req, res) => {
+// Get WIP trips for a driver
+app.get('/api/trips/wip/:driverEmail', async (req, res) => {
   const { driverEmail } = req.params;
 
-  db.query(
-    'SELECT * FROM trips WHERE status = ? AND driverEmail LIKE ?',
-    ['WIP', `%${driverEmail}%`],
-    (err, results) => {
-      if (err) {
-        return handleDbError(res, err, 'Fetching WIP trips');
-      }
+  if (!driverEmail) {
+    return res.status(400).json({ message: 'driverEmail is required' });
+  }
 
-      res.status(200).json(results);
-    }
-  );
+  try {
+    const [results] = await db.query(
+      'SELECT * FROM trips WHERE status = ? AND driverEmail = ?', // Exact match for assigned driver
+      ['WIP', driverEmail]
+    );
+    res.status(200).json(results);
+  } catch (err) {
+    handleDbError(res, err, 'Fetching WIP trips');
+  }
 });
 
-// Update trip field
-app.put('/api/trips/update-field', (req, res) => {
+// Update specific trip field (e.g., startMeter, endMeter)
+app.put('/api/trips/update-field', async (req, res) => {
   const { tripId, field, value } = req.body;
 
   if (!tripId || !field) {
     return res.status(400).json({ message: "Missing tripId or field" });
   }
 
+  // Whitelist allowed fields to prevent SQL injection
   const allowedFields = ['startMeter', 'endMeter', 'luggage', 'pet', 'toll', 'hills'];
   if (!allowedFields.includes(field)) {
-    return res.status(400).json({ message: "Invalid field name" });
+    return res.status(400).json({ message: "Invalid field name provided" });
   }
 
-  db.query(`UPDATE trips SET ${field} = ? WHERE id = ?`, [value, tripId], (err) => {
-    if (err) {
-      return handleDbError(res, err, 'Updating trip field');
+  try {
+    const [result] = await db.query(`UPDATE trips SET ${field} = ? WHERE id = ?`, [value, tripId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Trip not found or field not updated' });
     }
-    res.status(200).json({ message: "Trip updated successfully" });
-  });
+    res.status(200).json({ message: `Trip ${field} updated successfully` });
+  } catch (err) {
+    handleDbError(res, err, `Updating trip field: ${field}`);
+  }
 });
 
-// Get all drivers
+// Get a list of all drivers (email and name only for selection)
 app.get('/api/drivers', async (req, res) => {
-  db.query('SELECT email, name FROM drivers', (err, rows) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching trips');
-    }
+  try {
+    const [rows] = await db.query('SELECT id, email, name FROM drivers');
     res.status(200).json(rows);
-  });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching drivers list');
+  }
 });
 
+// Get all bills (for admin dashboard)
 app.get('/api/all-bills', async (req, res) => {
-  db.query('SELECT * FROM bills ORDER BY pickupDate DESC', (err, rows) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching trips');
-    }
+  try {
+    const [rows] = await db.query('SELECT * FROM bills ORDER BY createdAt DESC');
     res.status(200).json(rows);
-  });
+  } catch (err) {
+    handleDbError(res, err, 'Fetching all bills');
+  }
 });
 
+// Get all driver details (for admin dashboard)
 app.get('/api/all-drivers', async (req, res) => {
-  db.query('SELECT * FROM drivers', (err, rows) => {
-    if (err) {
-      return handleDbError(res, err, 'Fetching trips');
-    }
-    res.status(200).json(rows);
-  });
+  try {
+    const [rows] = await db.query('SELECT * FROM drivers');
+    // Filter out passwords before sending all driver details
+    const driversWithoutPasswords = rows.map(driver => {
+      const { password, ...driverData } = driver;
+      return driverData;
+    });
+    res.status(200).json(driversWithoutPasswords);
+  } catch (err) {
+    handleDbError(res, err, 'Fetching all drivers details');
+  }
 });
 
+// Assign driver to a trip (admin action)
 app.put('/api/trips/assign-driver', async (req, res) => {
   const { tripId, driverEmail } = req.body;
 
@@ -574,32 +538,27 @@ app.put('/api/trips/assign-driver', async (req, res) => {
     return res.status(400).json({ message: 'tripId and driverEmail are required' });
   }
 
-  const assignedAt = new Date().toISOString().slice(0, 19).replace('T', ' '); // MySQL format
-
+  // Ensure the trip is in a suitable status for assignment (e.g., 'pending' or 'new')
+  // You might want to add a 'pending' status for unassigned trips
   const sql = `
     UPDATE trips
-    SET driverEmail = ?, status = 'accept', assignedAt = ?
-    WHERE id = ?
+    SET driverEmail = ?, status = 'accept', assignedAt = NOW()
+    WHERE id = ? AND status != 'completed' AND status != 'WIP'
   `;
 
   try {
-    db.query(sql, [driverEmail, assignedAt, tripId], (err, result) => {
-      if (err) {
-        console.error('Error updating trip:', err);
-        return res.status(500).json({ message: 'Internal Server Error' });
-      }
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: 'Trip not found' });
-      }
-      res.status(200).json({ message: 'Driver assigned successfully' });
-    });
+    const [result] = await db.query(sql, [driverEmail, tripId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Trip not found or cannot be assigned (e.g., already completed/in progress)' });
+    }
+    res.status(200).json({ message: 'Driver assigned successfully' });
   } catch (err) {
-    console.error('Assignment failed:', err);
-    res.status(500).json({ message: 'Internal Server Error' });
+    handleDbError(res, err, 'Assigning driver to trip');
   }
 });
 
-
+// Add a new trip (customer/admin action)
 app.post("/api/trips/add-trips", async (req, res) => {
   const trip = req.body;
 
@@ -608,38 +567,39 @@ app.post("/api/trips/add-trips", async (req, res) => {
       INSERT INTO trips (
         pickupLocation, dropLocation, tripType, car, pickupDate, pickupTime,
         days, kmPrice, km, betta, phone, state, customerName, customerRemark,
-        adult, child, luggage, customerCurrentLocation, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        adult, child, luggage, customerCurrentLocation, created_at, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      trip.pickupLocation,
-      trip.dropLocation,
-      trip.tripType,
-      trip.car,
-      trip.pickupDate,
-      trip.pickupTime,
+      trip.pickupLocation || null,
+      trip.dropLocation || null,
+      trip.tripType || null,
+      trip.car || null,
+      trip.pickupDate || null,
+      trip.pickupTime || null,
       trip.days || 0,
       trip.kmPrice || 0,
       trip.km || 0,
       trip.betta || 0,
-      trip.phone,
-      trip.state,
-      trip.customerName,
-      trip.customerRemark,
+      trip.phone || null,
+      trip.state || null,
+      trip.customerName || null,
+      trip.customerRemark || null,
       trip.adult || 0,
       trip.child || 0,
       trip.luggage || 0,
-      trip.customerCurrentLocation,
-      trip.created_at || new Date()
+      trip.customerCurrentLocation || null,
+      new Date(), // Set created_at to current timestamp
+      'pending' // Default status for new trips
     ]);
 
     res.status(201).json({ message: "Trip stored successfully", tripId: result.insertId });
   } catch (error) {
-    console.error("Error inserting trip:", error);
-    res.status(500).json({ message: "Failed to insert trip" });
+    handleDbError(res, error, "Inserting new trip");
   }
 });
 
 
+// Start the server
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
