@@ -19,13 +19,63 @@ const handleDbError = (res, err, context = 'Database operation') => {
   res.status(500).json({ message: `${context} failed`, error: err.message || 'Internal Server Error' });
 };
 
+// // Driver Registration
+// app.post('/api/drivers/register', async (req, res) => {
+//   const {
+//     name,
+//     email,
+//     phoneNumber,
+//     password,
+//     rcNumber,
+//     fcDate,
+//     insuranceNumber,
+//     insuranceExpiryDate,
+//     drivingLicense,
+//     drivingLicenseExpiryDate
+//   } = req.body;
+
+//   // Basic input validation
+//   if (!name || !email || !phoneNumber || !password) {
+//     return res.status(400).json({ message: 'Required fields (name, email, phoneNumber, password) are missing' });
+//   }
+
+//   try {
+//     //const hashedPassword = await bcrypt.hash(password, 10);
+
+//     const [result] = await db.query( // Using await with db.query
+//       `INSERT INTO drivers
+//        (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry)
+//        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+//       [
+//         name,
+//         email,
+//         phoneNumber,
+//         hashedPassword,
+//         rcNumber || null, // Allow null if not provided
+//         fcDate || null,
+//         insuranceNumber || null,
+//         insuranceExpiryDate || null,
+//         drivingLicense || null,
+//         drivingLicenseExpiryDate || null
+//       ]
+//     );
+//     res.status(201).json({ message: 'Driver registered successfully', driverId: result.insertId });
+//   } catch (err) {
+//     // Check for duplicate entry error (e.g., email unique constraint)
+//     if (err.code === 'ER_DUP_ENTRY') {
+//       return res.status(409).json({ message: 'Email, phone, RC number, or insurance number already registered.' });
+//     }
+//     handleDbError(res, err, 'Driver registration');
+//   }
+// });
+
 // Driver Registration
 app.post('/api/drivers/register', async (req, res) => {
   const {
     name,
     email,
     phoneNumber,
-    password,
+    password, // This will now be stored in plain text
     rcNumber,
     fcDate,
     insuranceNumber,
@@ -40,17 +90,20 @@ app.post('/api/drivers/register', async (req, res) => {
   }
 
   try {
-    //const hashedPassword = await bcrypt.hash(password, 10);
+    // --- CHANGE IS HERE ---
+    // Removed the bcrypt.hash line. The 'password' variable will now directly be the plain text password.
+    // const hashedPassword = await bcrypt.hash(password, 10);
+    // --- END CHANGE ---
 
     const [result] = await db.query( // Using await with db.query
       `INSERT INTO drivers
-       (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name,
         email,
         phoneNumber,
-        hashedPassword,
+        password, // <-- Storing the plain text password directly
         rcNumber || null, // Allow null if not provided
         fcDate || null,
         insuranceNumber || null,
@@ -93,6 +146,43 @@ app.post('/api/drivers/check-exists', async (req, res) => {
   }
 });
 
+// // Login
+// app.post('/login', async (req, res) => {
+//   const { email, password } = req.body;
+
+//   if (!email || !password) {
+//     return res.status(400).json({ message: 'Email and password are required' });
+//   }
+
+//   try {
+//     const [rows] = await db.query('SELECT * FROM drivers WHERE email = ?', [email]); // Using await
+
+//     if (rows.length === 0) {
+//       return res.status(401).json({ message: 'Invalid email or password' });
+//     }
+
+//     const driver = rows[0];
+//     //const isMatch = await bcrypt.compare(password, driver.password);
+
+//     if (!isMatch) {
+//       return res.status(401).json({ message: 'Invalid email or password' });
+//     }
+
+//     const token = jwt.sign(
+//       { id: driver.id, email: driver.email, role: 'driver' }, // Include a role if applicable
+//       process.env.JWT_SECRET,
+//       { expiresIn: '7d' }
+//     );
+
+//     // Filter out sensitive data like password before sending to client
+//     const { password: _, ...userWithoutPassword } = driver;
+
+//     res.status(200).json({ token, user: userWithoutPassword });
+//   } catch (err) {
+//     handleDbError(res, err, 'Login');
+//   }
+// });
+
 // Login
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -102,14 +192,18 @@ app.post('/login', async (req, res) => {
   }
 
   try {
-    const [rows] = await db.query('SELECT * FROM drivers WHERE email = ?', [email]); // Using await
+    const [rows] = await db.query('SELECT * FROM drivers WHERE email = ?', [email]);
 
     if (rows.length === 0) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     const driver = rows[0];
-    //const isMatch = await bcrypt.compare(password, driver.password);
+
+    // --- CHANGE IS HERE ---
+    // Instead of bcrypt.compare, directly compare the plain text passwords
+    const isMatch = (password === driver.password);
+    // --- END CHANGE ---
 
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid email or password' });
