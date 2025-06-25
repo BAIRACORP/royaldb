@@ -218,8 +218,7 @@ app.put('/api/drivers/:id', async (req, res) => {
 // Get all trips
 app.get('/api/trips', async (req, res) => {
   try {
-    // Modified to order trips by ID in descending order
-    const [rows] = await db.query('SELECT * FROM trips ORDER BY id DESC');
+    const [rows] = await db.query('SELECT * FROM trips');
     res.status(200).json(rows);
   } catch (err) {
     handleDbError(res, err, 'Fetching trips');
