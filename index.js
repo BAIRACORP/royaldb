@@ -6,6 +6,7 @@ const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 // Assuming config/db.js exports a mysql2/promise connection pool
@@ -23,49 +24,40 @@ const handleDbError = (res, err, context = 'Database operation') => {
 // Driver Registration
 app.post('/api/drivers/register', async (req, res) => {
   const {
+    name, email, phoneNumber, password,
+    rcNumber, fcDate, insuranceNumber, insuranceExpiryDate,
+    drivingLicense, drivingLicenseExpiryDate,
+     status
+  } = req.body;
+
+  try {
+  await db.query(
+  `INSERT INTO drivers 
+  (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry, status, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+  [
     name,
     email,
     phoneNumber,
-    password, // Password will be stored in plaintext
+    password,
     rcNumber,
     fcDate,
     insuranceNumber,
     insuranceExpiryDate,
     drivingLicense,
-    drivingLicenseExpiryDate
-  } = req.body;
+    drivingLicenseExpiryDate,
+    status // 'paused'
+  ]
+);
 
-  if (!name || !email || !phoneNumber || !password) {
-    return res.status(400).json({ message: 'Required fields are missing' });
-  }
 
-  try {
-    // Storing password in plaintext as per user request.
-    // WARNING: This is highly insecure for production applications.
-    const plaintextPassword = password;
-
-    const [result] = await db.query(
-      `INSERT INTO drivers
-      (name, email, phone, password, rc_number, fc_expiry, insurance_number, insurance_expiry, driving_license, dl_expiry)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        name,
-        email,
-        phoneNumber,
-        plaintextPassword, // Use plaintext password
-        rcNumber,
-        fcDate,
-        insuranceNumber,
-        insuranceExpiryDate,
-        drivingLicense,
-        drivingLicenseExpiryDate
-      ]
-    );
-    res.status(201).json({ message: 'Driver registered successfully', driverId: result.insertId });
+    res.json({ message: 'Driver registered successfully' });
   } catch (err) {
-    handleDbError(res, err, 'Driver registration');
+    console.error(err);
+    res.status(500).json({ message: 'Registration failed' });
   }
 });
+
 
 // Check if driver exists
 app.post('/api/drivers/check-exists', async (req, res) => {
@@ -591,6 +583,128 @@ app.post("/api/trips/add-trips", async (req, res) => {
     res.status(500).json({ message: "Failed to insert trip" });
   }
 });
+
+app.delete('/api/trips/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [result] = await db.execute('DELETE FROM trips WHERE id = ?', [id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Trip not found' });
+    }
+
+    // Removed: io.emit('tripDeleted', id);
+
+    res.status(200).json({ message: 'Trip deleted successfully', deletedId: id });
+  } catch (err) {
+    console.error('Error deleting trip:', err);
+    res.status(500).json({ message: 'Error deleting trip', error: err.message });
+  }
+});
+
+app.put('/api/drivers/:id', async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+
+  // Build dynamic SQL update query
+  const fields = [];
+  const values = [];
+
+  for (const key in updates) {
+    fields.push(`${key} = ?`);
+    values.push(updates[key]);
+  }
+
+  if (fields.length === 0) {
+    return res.status(400).json({ message: 'No update fields provided.' });
+  }
+
+  values.push(id); // for WHERE clause
+
+  const query = `UPDATE drivers SET ${fields.join(', ')} WHERE id = ?`;
+
+  try {
+    const [result] = await db.execute(query, values);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Driver not found.' });
+    }
+
+    res.status(200).json({ message: 'Driver updated successfully.' });
+  } catch (err) {
+    console.error('Error updating driver:', err);
+    res.status(500).json({ message: 'Failed to update driver.', error: err.message });
+  }
+});
+//current location
+app.get('/api/driver/:id', async (req, res) => {
+  const { id } = req.params;
+  const result = await db.query('SELECT current_location FROM drivers WHERE id = ?', [id]);
+  if (result.length === 0) return res.status(404).send({ error: 'Not found' });
+  res.send(result[0]);
+});
+
+//current location update
+app.put('/api/driver/:id', async (req, res) => {
+  const { id } = req.params;
+  const { currentDistrict } = req.body;
+
+  if (!currentDistrict) {
+    return res.status(400).json({ success: false, message: 'currentDistrict is required' });
+  }
+
+  try {
+    const [result] = await db.query(
+      'UPDATE drivers SET current_location = ? WHERE id = ?',
+      [currentDistrict, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Driver not found' });
+    }
+
+    res.json({ success: true, message: 'District updated successfully' });
+  } catch (err) {
+    console.error('Error updating driver district:', err);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+//status update
+app.put('/api/driver/:id/status', async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  // if (!['active', 'paused', 'blocked'].includes(status)) {
+  //   return res.status(400).json({ error: 'Invalid status' });
+  // }
+if (![ 'paused', 'active'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
+
+  try {
+    await db.query('UPDATE drivers SET status = ? WHERE id = ?', [status, id]);
+    res.json({ success: true, status });
+  } catch (err) {
+    console.error('Error updating status:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+//delete driver
+app.delete('/api/driver/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    await db.query('DELETE FROM drivers WHERE id = ?', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting driver:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 
 
 app.listen(PORT, () => {
