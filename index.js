@@ -195,17 +195,17 @@ app.get('/api/drivers/:id', async (req, res) => {
 });
 
 // Update driver
-app.put('/api/drivers/:id', async (req, res) => {
-  const { id } = req.params;
-  const updatedData = req.body;
+//app.put('/api/drivers/:id', async (req, res) => {
+//   const { id } = req.params;
+//   const updatedData = req.body;
 
-  try {
-    await db.query('UPDATE drivers SET ? WHERE id = ?', [updatedData, id]);
-    res.json({ message: 'Driver updated successfully' });
-  } catch (err) {
-    handleDbError(res, err, 'Updating driver');
-  }
-});
+//   try {
+//     await db.query('UPDATE drivers SET ? WHERE id = ?', [updatedData, id]);
+//     res.json({ message: 'Driver updated successfully' });
+//   } catch (err) {
+//     handleDbError(res, err, 'Updating driver');
+//   }
+// });
 
 // Get all trips
 app.get('/api/trips', async (req, res) => {
@@ -603,40 +603,40 @@ app.delete('/api/trips/:id', async (req, res) => {
   }
 });
 
-app.put('/api/drivers/:id', async (req, res) => {
-  const { id } = req.params;
-  const updates = req.body;
+// app.put('/api/drivers/:id', async (req, res) => {
+//   const { id } = req.params;
+//   const updates = req.body;
 
-  // Build dynamic SQL update query
-  const fields = [];
-  const values = [];
+//   // Build dynamic SQL update query
+//   const fields = [];
+//   const values = [];
 
-  for (const key in updates) {
-    fields.push(`${key} = ?`);
-    values.push(updates[key]);
-  }
+//   for (const key in updates) {
+//     fields.push(`${key} = ?`);
+//     values.push(updates[key]);
+//   }
 
-  if (fields.length === 0) {
-    return res.status(400).json({ message: 'No update fields provided.' });
-  }
+//   if (fields.length === 0) {
+//     return res.status(400).json({ message: 'No update fields provided.' });
+//   }
 
-  values.push(id); // for WHERE clause
+//   values.push(id); // for WHERE clause
 
-  const query = `UPDATE drivers SET ${fields.join(', ')} WHERE id = ?`;
+//   const query = `UPDATE drivers SET ${fields.join(', ')} WHERE id = ?`;
 
-  try {
-    const [result] = await db.execute(query, values);
+//   try {
+//     const [result] = await db.execute(query, values);
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Driver not found.' });
-    }
+//     if (result.affectedRows === 0) {
+//       return res.status(404).json({ message: 'Driver not found.' });
+//     }
 
-    res.status(200).json({ message: 'Driver updated successfully.' });
-  } catch (err) {
-    console.error('Error updating driver:', err);
-    res.status(500).json({ message: 'Failed to update driver.', error: err.message });
-  }
-});
+//     res.status(200).json({ message: 'Driver updated successfully.' });
+//   } catch (err) {
+//     console.error('Error updating driver:', err);
+//     res.status(500).json({ message: 'Failed to update driver.', error: err.message });
+//   }
+// });
 //current location
 app.get('/api/driver/:id', async (req, res) => {
   const { id } = req.params;
@@ -702,6 +702,51 @@ app.delete('/api/driver/:id', async (req, res) => {
   } catch (err) {
     console.error('Error deleting driver:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+app.put('/api/drivers/:id', async (req, res) => {
+  const { id } = req.params;
+
+  // Map frontend keys to DB column names
+  const fieldMap = {
+    name: 'name',
+    email: 'email',
+    password: 'password',
+    phoneNumber: 'phone',
+    rcNumber: 'rc_number',
+    drivingLicense: 'driving_license',
+    drivingLicenseExpiryDate: 'dl_expiry',
+    fcDate: 'fc_expiry',
+    insuranceNumber: 'insurance_number',
+    insuranceExpiryDate: 'insurance_expiry',
+    current_location: 'current_location',
+    status: 'status',
+  };
+
+  const updates = {};
+  for (const key in req.body) {
+    if (fieldMap[key]) {
+      updates[fieldMap[key]] = req.body[key];
+    }
+  }
+
+  // If no valid fields, return
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No valid fields to update.' });
+  }
+
+  // Build SQL SET clause and values array
+  const setClause = Object.keys(updates).map((col) => `\`${col}\` = ?`).join(', ');
+  const values = Object.values(updates);
+
+  const sql = `UPDATE drivers SET ${setClause} WHERE id = ?`;
+
+  try {
+    const [result] = await db.execute(sql, [...values, id]); // assuming you're using a promise-based MySQL client
+    res.json({ message: 'Driver updated successfully', affectedRows: result.affectedRows });
+  } catch (error) {
+    console.error('SQL Update Error:', error);
+    res.status(500).json({ error: 'Failed to update driver', sqlMessage: error.sqlMessage });
   }
 });
 
