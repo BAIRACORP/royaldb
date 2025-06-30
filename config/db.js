@@ -12,7 +12,7 @@ const createPool = () => {
     database: process.env.DB_NAME,
 
     waitForConnections: true,
-    connectionLimit: 100,         // For 400 clients, use a safe max pool size (80–100)
+    connectionLimit: 30,         // For 400 clients, use a safe max pool size (80–100)
     queueLimit: 0,                // No limit on queued connection requests
     connectTimeout: 20000,        // 20s connection timeout
     keepAliveInitialDelay: 300000,
