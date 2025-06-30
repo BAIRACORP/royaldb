@@ -13,7 +13,7 @@ const createPool = () => {
 
     waitForConnections: true,
     connectionLimit: 30,         // For 400 clients, use a safe max pool size (80–100)
-    queueLimit: 0,                // No limit on queued connection requests
+    queueLimit: 100,                // No limit on queued connection requests
     connectTimeout: 20000,        // 20s connection timeout
     keepAliveInitialDelay: 300000,
     enableKeepAlive: true
